@@ -5,17 +5,18 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import warnings
+import io
 warnings.filterwarnings('ignore')
 
 # Set page config
 st.set_page_config(
     page_title="Multi-Language Business Dashboard",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # ===================== MULTI-LANGUAGE SUPPORT =====================
-# Language dictionary
 LANGUAGES = {
     "English": {
         "title": "Business Intelligence Dashboard",
@@ -57,7 +58,12 @@ LANGUAGES = {
         "insights": "Insights",
         "trend": "Trend",
         "comparison": "Comparison",
-        "forecast": "Forecast"
+        "forecast": "Forecast",
+        "data_quality": "Data Quality Check",
+        "statistics": "Statistics",
+        "overview": "Overview",
+        "export": "Export",
+        "visualizations": "Visualizations"
     },
     "Indonesia": {
         "title": "Dasbor Bisnis Inteligensi",
@@ -99,7 +105,12 @@ LANGUAGES = {
         "insights": "Insights",
         "trend": "Tren",
         "comparison": "Perbandingan",
-        "forecast": "Perkiraan"
+        "forecast": "Perkiraan",
+        "data_quality": "Pemeriksaan Kualitas Data",
+        "statistics": "Statistik",
+        "overview": "Gambaran Umum",
+        "export": "Ekspor",
+        "visualizations": "Visualisasi"
     },
     "中文": {
         "title": "商业智能仪表板",
@@ -141,11 +152,16 @@ LANGUAGES = {
         "insights": "洞察",
         "trend": "趋势",
         "comparison": "比较",
-        "forecast": "预测"
+        "forecast": "预测",
+        "data_quality": "数据质量检查",
+        "statistics": "统计",
+        "overview": "概览",
+        "export": "导出",
+        "visualizations": "可视化"
     }
 }
 
-# Initialize session state for language
+# Initialize session state
 if 'language' not in st.session_state:
     st.session_state.language = "English"
 if 'df' not in st.session_state:
@@ -154,10 +170,12 @@ if 'processed' not in st.session_state:
     st.session_state.processed = False
 if 'file_name' not in st.session_state:
     st.session_state.file_name = None
+if 'column_types' not in st.session_state:
+    st.session_state.column_types = {}
 
-# Language selector in sidebar
+# ===================== SIDEBAR =====================
 with st.sidebar:
-    st.title("🌍 Language / 语言 / Bahasa")
+    st.title("🌍 Language Settings")
     selected_language = st.selectbox(
         LANGUAGES[st.session_state.language]["select_language"],
         options=list(LANGUAGES.keys()),
@@ -170,34 +188,79 @@ with st.sidebar:
     
     st.markdown("---")
     lang = LANGUAGES[st.session_state.language]
+    
+    # Display app info
+    st.markdown("### 📱 App Information")
+    st.markdown("**Version:** 2.2")
+    st.markdown("**Last Updated:** Dec 2024")
+    st.markdown("**Developer:** Business Analytics Team")
+    
+    st.markdown("---")
+    
+    # Quick tips
+    st.markdown("### 💡 Quick Tips")
+    st.markdown("1. Ensure Excel file is not open")
+    st.markdown("2. Remove empty rows/columns")
+    st.markdown("3. Use consistent date formats")
+    st.markdown("4. Check for duplicate headers")
 
 # ===================== HELPER FUNCTIONS =====================
 def detect_column_types(df):
-    """Detect column types with better accuracy"""
+    """Detect column types with improved accuracy"""
     date_cols = []
     numeric_cols = []
     categorical_cols = []
     
     for col in df.columns:
+        # Skip if all values are NaN
+        if df[col].isna().all():
+            categorical_cols.append(col)
+            continue
+            
         # Try to detect date columns
         try:
-            # Convert to datetime if possible
-            temp_series = pd.to_datetime(df[col], errors='coerce')
-            if temp_series.notna().any():
+            # Sample first non-null value
+            sample_val = df[col].dropna().iloc[0] if not df[col].dropna().empty else None
+            
+            # Try different date detection methods
+            if isinstance(sample_val, (datetime, pd.Timestamp)):
                 date_cols.append(col)
-                continue
+            elif isinstance(sample_val, str):
+                # Try to parse string as date
+                try:
+                    pd.to_datetime(df[col], errors='raise')
+                    date_cols.append(col)
+                except:
+                    # Check if it looks like a date string
+                    if any(keyword in col.lower() for keyword in ['date', 'time', 'day', 'month', 'year', 'tanggal', 'waktu']):
+                        try:
+                            df[col] = pd.to_datetime(df[col], errors='coerce')
+                            if df[col].notna().any():
+                                date_cols.append(col)
+                                continue
+                        except:
+                            pass
+                    
+                    # Default to categorical for string columns with few unique values
+                    if df[col].nunique() < 50 or df[col].nunique() / len(df) < 0.1:
+                        categorical_cols.append(col)
+                    else:
+                        categorical_cols.append(col)
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                numeric_cols.append(col)
+            elif pd.api.types.is_categorical_dtype(df[col]) or df[col].dtype == 'object':
+                if df[col].nunique() < 50:
+                    categorical_cols.append(col)
+                else:
+                    categorical_cols.append(col)
+            else:
+                categorical_cols.append(col)
         except:
-            pass
-        
-        # Check if numeric
-        if pd.api.types.is_numeric_dtype(df[col]):
-            numeric_cols.append(col)
-        # Check if categorical/object
-        elif pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_categorical_dtype(df[col]):
-            categorical_cols.append(col)
-        else:
-            # Default to categorical for unknown types
-            categorical_cols.append(col)
+            # If detection fails, try basic dtype check
+            if pd.api.types.is_numeric_dtype(df[col]):
+                numeric_cols.append(col)
+            else:
+                categorical_cols.append(col)
     
     return date_cols, numeric_cols, categorical_cols
 
@@ -205,12 +268,59 @@ def clean_dataframe(df):
     """Clean and prepare dataframe for analysis"""
     df_clean = df.copy()
     
-    # Convert object columns with few unique values to category
+    # Remove completely empty rows and columns
+    df_clean = df_clean.dropna(how='all')
+    df_clean = df_clean.loc[:, df_clean.notna().any()]
+    
+    # Trim whitespace from string columns
+    for col in df_clean.select_dtypes(include=['object']).columns:
+        df_clean[col] = df_clean[col].astype(str).str.strip()
+    
+    # Convert 'object' columns with few unique values to 'category'
     for col in df_clean.select_dtypes(include=['object']).columns:
         if df_clean[col].nunique() < 50:
-            df_clean[col] = df_clean[col].astype('category')
+            df_clean[col] = pd.Categorical(df_clean[col])
     
     return df_clean
+
+def create_summary_statistics(df, numeric_cols, date_cols, categorical_cols):
+    """Create comprehensive summary statistics"""
+    summary = {
+        'total_rows': len(df),
+        'total_columns': len(df.columns),
+        'missing_values': int(df.isnull().sum().sum()),
+        'duplicate_rows': int(df.duplicated().sum()),
+        'memory_usage_mb': df.memory_usage(deep=True).sum() / 1024 / 1024,
+        'date_columns': len(date_cols),
+        'numeric_columns': len(numeric_cols),
+        'categorical_columns': len(categorical_cols)
+    }
+    
+    # Add numeric column statistics
+    if numeric_cols:
+        summary['numeric_stats'] = {}
+        for col in numeric_cols[:5]:  # Limit to first 5 numeric columns
+            summary['numeric_stats'][col] = {
+                'mean': float(df[col].mean()),
+                'median': float(df[col].median()),
+                'std': float(df[col].std()),
+                'min': float(df[col].min()),
+                'max': float(df[col].max())
+            }
+    
+    # Add date range if available
+    if date_cols:
+        for col in date_cols:
+            try:
+                summary['date_range'] = {
+                    'min': df[col].min().strftime('%Y-%m-%d'),
+                    'max': df[col].max().strftime('%Y-%m-%d')
+                }
+                break
+            except:
+                continue
+    
+    return summary
 
 # ===================== MAIN APP =====================
 st.title(f"📊 {lang['title']}")
@@ -218,75 +328,113 @@ st.markdown("---")
 
 # File upload section
 st.header(f"📁 {lang['upload']}")
-st.write(lang['upload_desc'])
+col_upload1, col_upload2 = st.columns([2, 1])
 
-uploaded_file = st.file_uploader(
-    lang['drag_drop'],
-    type=['xlsx', 'xls'],
-    help=lang['file_limit']
-)
+with col_upload1:
+    st.write(lang['upload_desc'])
+    
+    uploaded_file = st.file_uploader(
+        lang['drag_drop'],
+        type=['xlsx', 'xls'],
+        help=lang['file_limit'],
+        label_visibility="collapsed"
+    )
+
+with col_upload2:
+    # Sample data download
+    st.markdown("### 📋 Need Sample Data?")
+    sample_data = {
+        'Date': pd.date_range('2024-01-01', periods=30),
+        'Sales': np.random.randint(1000, 5000, 30),
+        'Profit': np.random.randint(200, 1000, 30),
+        'Quantity': np.random.randint(10, 100, 30),
+        'Category': np.random.choice(['Electronics', 'Clothing', 'Home', 'Food'], 30),
+        'Region': np.random.choice(['North', 'South', 'East', 'West'], 30),
+        'Customer_Rating': np.random.uniform(3.0, 5.0, 30).round(1)
+    }
+    sample_df = pd.DataFrame(sample_data)
+    
+    csv = sample_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="Download Sample CSV",
+        data=csv,
+        file_name="sample_business_data.csv",
+        mime="text/csv"
+    )
 
 # Process uploaded file
 if uploaded_file is not None:
     try:
-        with st.spinner(lang['processing']):
-            # Read Excel file
+        with st.spinner(f"{lang['processing']}..."):
+            # Determine engine based on file extension
             if uploaded_file.name.endswith('.xls'):
-                # For older Excel format
                 df = pd.read_excel(uploaded_file, engine='xlrd')
             else:
-                # For newer Excel format
                 df = pd.read_excel(uploaded_file, engine='openpyxl')
             
             # Clean and process data
             df = clean_dataframe(df)
             
+            # Detect column types
+            date_cols, numeric_cols, categorical_cols = detect_column_types(df)
+            
             # Store in session state
             st.session_state.df = df
             st.session_state.processed = True
             st.session_state.file_name = uploaded_file.name
+            st.session_state.column_types = {
+                'date': date_cols,
+                'numeric': numeric_cols,
+                'categorical': categorical_cols
+            }
             
-            st.success(f"✅ {lang['file_uploaded']}: {uploaded_file.name}")
+            st.success(f"✅ {lang['file_uploaded']}")
             
-            # Show file info
-            st.info(f"📄 **File Details:** {uploaded_file.name} | Size: {uploaded_file.size / 1024:.1f} KB")
-            
+            # Show quick file info
+            with st.expander("📄 File Information", expanded=True):
+                col_info1, col_info2, col_info3 = st.columns(3)
+                with col_info1:
+                    st.metric("File Name", uploaded_file.name)
+                with col_info2:
+                    st.metric("File Size", f"{uploaded_file.size / 1024:.1f} KB")
+                with col_info3:
+                    st.metric("Rows x Columns", f"{len(df)} × {len(df.columns)}")
+                    
     except Exception as e:
         st.error(f"❌ {lang['error']}: {str(e)}")
         st.info("""
-        💡 **Tips untuk mengatasi error:**
-        1. Pastikan file Excel tidak sedang terbuka di aplikasi lain
-        2. Pastikan format file benar (.xlsx atau .xls)
-        3. Coba install dependencies: `pip install openpyxl xlrd`
-        4. Jika file .xls, pastikan engine='xlrd'
+        **💡 Troubleshooting Tips:**
+        1. Make sure the Excel file is not open in another program
+        2. Check if the file is corrupted
+        3. Try saving as .xlsx format
+        4. Ensure you have openpyxl installed: `pip install openpyxl`
         """)
 
 # Display dashboard if data is available
 if st.session_state.processed and st.session_state.df is not None:
     df = st.session_state.df
+    date_cols = st.session_state.column_types.get('date', [])
+    numeric_cols = st.session_state.column_types.get('numeric', [])
+    categorical_cols = st.session_state.column_types.get('categorical', [])
     
-    # Detect column types
-    date_cols, numeric_cols, categorical_cols = detect_column_types(df)
-    
-    # ===================== DATA PREVIEW =====================
-    st.header(f"🔍 {lang['data_preview']}")
-    
-    # Data filters in sidebar
+    # ===================== SIDEBAR FILTERS =====================
     with st.sidebar:
+        st.markdown("---")
         st.header(f"🔧 {lang['filter_data']}")
         
-        # Column type filters
+        # Row limit slider
+        row_limit = st.slider("Rows to display", 5, 1000, 100, 5)
+        
+        # Column selection
         if numeric_cols:
             selected_numeric = st.multiselect(
                 f"📈 {lang['select_value_col']}",
                 numeric_cols,
-                default=numeric_cols[:min(2, len(numeric_cols))]
+                default=numeric_cols[:min(3, len(numeric_cols))]
             )
         else:
             selected_numeric = []
-            st.warning(lang['no_numeric_col'])
-        
-        # Date filter
+            
         if date_cols:
             selected_date = st.selectbox(
                 f"📅 {lang['select_date_col']}",
@@ -294,9 +442,7 @@ if st.session_state.processed and st.session_state.df is not None:
             )
         else:
             selected_date = None
-            st.warning(lang['no_date_col'])
-        
-        # Categorical filter
+            
         if categorical_cols:
             selected_category = st.selectbox(
                 f"🏷️ {lang['select_category_col']}",
@@ -304,212 +450,349 @@ if st.session_state.processed and st.session_state.df is not None:
             )
         else:
             selected_category = None
-            st.warning(lang['no_category_col'])
         
-        # Row limit
-        row_limit = st.slider("Rows to display", 5, 100, 10)
+        # Additional filters
+        st.markdown("---")
+        st.subheader("Advanced Filters")
         
         # Missing values filter
-        show_missing_only = st.checkbox("Show only rows with missing values", False)
+        show_missing = st.checkbox("Show rows with missing values only", False)
         
-        st.markdown("---")
-        st.markdown(f"**📊 Data Summary:**")
-        st.markdown(f"- Rows: {len(df)}")
-        st.markdown(f"- Columns: {len(df.columns)}")
-        st.markdown(f"- Memory: {df.memory_usage(deep=True).sum() / 1024 / 1024:.1f} MB")
+        # Date range filter (if date column exists)
+        if selected_date and selected_date in df.columns:
+            try:
+                min_date = df[selected_date].min()
+                max_date = df[selected_date].max()
+                date_range = st.date_input(
+                    "Date Range",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+                if len(date_range) == 2:
+                    mask = (df[selected_date] >= pd.Timestamp(date_range[0])) & \
+                           (df[selected_date] <= pd.Timestamp(date_range[1]))
+                    df = df[mask]
+            except:
+                pass
+        
+        # Reset button in sidebar
+        if st.button(f"🔄 {lang['reset']} Filters", use_container_width=True, type="secondary"):
+            # Only reset filters, not the data
+            st.rerun()
     
-    # Display filtered data preview
+    # ===================== DATA PREVIEW =====================
+    st.header(f"🔍 {lang['data_preview']}")
+    
+    # Apply missing values filter
     preview_df = df.copy()
-    
-    if show_missing_only:
-        # Show only rows with any missing values
+    if show_missing:
         preview_df = preview_df[preview_df.isnull().any(axis=1)]
     
-    st.dataframe(preview_df.head(row_limit), use_container_width=True)
+    # Display data preview with tabs
+    tab_preview, tab_structure, tab_quality = st.tabs(["📋 Data Preview", "🏗️ Data Structure", "✅ Data Quality"])
     
-    if len(preview_df) == 0 and show_missing_only:
-        st.success("✅ No rows with missing values found!")
+    with tab_preview:
+        st.dataframe(preview_df.head(row_limit), use_container_width=True)
+        
+        # Show data summary
+        if len(preview_df) == 0 and show_missing:
+            st.success("🎉 No missing values found in the dataset!")
+        else:
+            st.caption(f"Showing {min(row_limit, len(preview_df))} of {len(preview_df)} rows")
     
-    # ===================== KPI SECTION =====================
+    with tab_structure:
+        col_struct1, col_struct2 = st.columns(2)
+        
+        with col_struct1:
+            st.subheader("Column Types")
+            type_data = {
+                'Type': ['Date', 'Numeric', 'Categorical', 'Other'],
+                'Count': [len(date_cols), len(numeric_cols), len(categorical_cols), 
+                         len(df.columns) - len(date_cols) - len(numeric_cols) - len(categorical_cols)]
+            }
+            type_df = pd.DataFrame(type_data)
+            st.dataframe(type_df, use_container_width=True)
+            
+            # Column list
+            st.subheader("All Columns")
+            for i, col in enumerate(df.columns, 1):
+                col_type = "📅 Date" if col in date_cols else \
+                          "🔢 Numeric" if col in numeric_cols else \
+                          "🏷️ Categorical" if col in categorical_cols else "📝 Other"
+                st.write(f"{i}. **{col}** - {col_type}")
+        
+        with col_struct2:
+            st.subheader("Data Types")
+            dtype_counts = df.dtypes.astype(str).value_counts().reset_index()
+            dtype_counts.columns = ['Data Type', 'Count']
+            
+            if not dtype_counts.empty:
+                fig_dtype = px.pie(
+                    dtype_counts, 
+                    values='Count', 
+                    names='Data Type',
+                    title="Data Type Distribution",
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                st.plotly_chart(fig_dtype, use_container_width=True)
+    
+    with tab_quality:
+        st.subheader("📊 Data Quality Report")
+        
+        # Calculate quality metrics
+        total_cells = len(df) * len(df.columns)
+        missing_cells = df.isnull().sum().sum()
+        missing_percentage = (missing_cells / total_cells * 100) if total_cells > 0 else 0
+        
+        duplicate_rows = df.duplicated().sum()
+        duplicate_percentage = (duplicate_rows / len(df) * 100) if len(df) > 0 else 0
+        
+        # Quality metrics display
+        col_qual1, col_qual2, col_qual3 = st.columns(3)
+        
+        with col_qual1:
+            st.metric("Completeness", f"{(100 - missing_percentage):.1f}%", 
+                     f"-{missing_percentage:.1f}% missing")
+        
+        with col_qual2:
+            st.metric("Uniqueness", f"{(100 - duplicate_percentage):.1f}%",
+                     f"-{duplicate_percentage:.1f}% duplicates")
+        
+        with col_qual3:
+            # Check for inconsistent data types
+            inconsistent_cols = 0
+            for col in df.columns:
+                if df[col].apply(type).nunique() > 1:
+                    inconsistent_cols += 1
+            consistency = ((len(df.columns) - inconsistent_cols) / len(df.columns) * 100) if len(df.columns) > 0 else 100
+            st.metric("Consistency", f"{consistency:.1f}%")
+        
+        # Missing values by column
+        st.subheader("Missing Values by Column")
+        missing_by_col = df.isnull().sum().reset_index()
+        missing_by_col.columns = ['Column', 'Missing Count']
+        missing_by_col = missing_by_col[missing_by_col['Missing Count'] > 0]
+        
+        if not missing_by_col.empty:
+            fig_missing = px.bar(
+                missing_by_col,
+                x='Column',
+                y='Missing Count',
+                title="Missing Values per Column",
+                color='Missing Count',
+                color_continuous_scale='Reds'
+            )
+            st.plotly_chart(fig_missing, use_container_width=True)
+        else:
+            st.success("✅ No missing values found in any column!")
+    
+    # ===================== KPI DASHBOARD =====================
     st.header(f"📈 {lang['kpi_section']}")
     
-    col1, col2, col3, col4 = st.columns(4)
+    # Create summary statistics
+    summary = create_summary_statistics(df, numeric_cols, date_cols, categorical_cols)
     
-    with col1:
-        st.metric(lang['total_records'], len(df))
+    # KPI Metrics Row 1
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
     
-    with col2:
-        st.metric(lang['total_columns'], len(df.columns))
+    with kpi_col1:
+        st.metric(
+            lang['total_records'],
+            f"{summary['total_rows']:,}",
+            help="Total number of rows in the dataset"
+        )
     
-    with col3:
-        st.metric(lang['date_columns'], len(date_cols))
+    with kpi_col2:
+        st.metric(
+            lang['total_columns'],
+            summary['total_columns'],
+            help="Total number of columns in the dataset"
+        )
     
-    with col4:
-        st.metric(lang['numeric_columns'], len(numeric_cols))
+    with kpi_col3:
+        st.metric(
+            lang['date_columns'],
+            summary['date_columns'],
+            help="Number of columns detected as dates"
+        )
     
-    # Additional metrics row
-    col5, col6, col7, col8 = st.columns(4)
+    with kpi_col4:
+        st.metric(
+            lang['numeric_columns'],
+            summary['numeric_columns'],
+            help="Number of columns detected as numeric"
+        )
     
-    with col5:
-        missing_total = df.isnull().sum().sum()
-        st.metric(lang['missing_values'], missing_total)
+    # KPI Metrics Row 2
+    kpi_col5, kpi_col6, kpi_col7, kpi_col8 = st.columns(4)
     
-    with col6:
-        duplicate_rows = df.duplicated().sum()
-        st.metric("Duplicate Rows / Baris Duplikat / 重复行数", duplicate_rows)
+    with kpi_col5:
+        st.metric(
+            lang['missing_values'],
+            f"{summary['missing_values']:,}",
+            delta=f"{(summary['missing_values']/summary['total_rows']*100):.1f}%" if summary['total_rows'] > 0 else "0%",
+            delta_color="inverse",
+            help="Total number of missing values"
+        )
     
-    with col7:
-        memory_usage = df.memory_usage(deep=True).sum() / 1024 / 1024
-        st.metric("Memory Usage (MB)", f"{memory_usage:.1f}")
+    with kpi_col6:
+        st.metric(
+            "Duplicate Rows",
+            summary['duplicate_rows'],
+            delta=f"{(summary['duplicate_rows']/summary['total_rows']*100):.1f}%" if summary['total_rows'] > 0 else "0%",
+            delta_color="inverse",
+            help="Number of duplicate rows"
+        )
     
-    with col8:
-        if numeric_cols:
-            avg_numeric = df[numeric_cols].mean().mean()
-            st.metric("Avg Numeric Value", f"{avg_numeric:.2f}")
+    with kpi_col7:
+        st.metric(
+            "Memory Usage",
+            f"{summary['memory_usage_mb']:.1f} MB",
+            help="Total memory used by the dataset"
+        )
+    
+    with kpi_col8:
+        if numeric_cols and 'numeric_stats' in summary:
+            avg_of_avgs = np.mean([stats['mean'] for stats in summary['numeric_stats'].values()])
+            st.metric(
+                "Avg Numeric Value",
+                f"{avg_of_avgs:,.2f}",
+                help="Average of all numeric column means"
+            )
         else:
             st.metric("Avg Numeric Value", "N/A")
     
     st.markdown("---")
     
-    # ===================== CHARTS SECTION =====================
-    st.header(f"📊 {lang['charts_section']}")
+    # ===================== VISUALIZATIONS =====================
+    st.header(f"📊 {lang['visualizations']}")
     
-    # Create tabs for better organization
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Data Types", 
+    # Create tabs for different visualizations
+    viz_tabs = st.tabs([
         "📈 Time Series", 
         "📊 Distributions", 
         "🔗 Correlations", 
-        "🏷️ Categories"
+        "🏷️ Categories",
+        "📋 Summary"
     ])
     
-    with tab1:
-        # Chart 1: Data Types Distribution
-        st.subheader(f"{lang['data_types']}")
-        dtype_counts = df.dtypes.astype(str).value_counts().reset_index()
-        dtype_counts.columns = ['Data Type', 'Count']
-        
-        if len(dtype_counts) > 0:
-            fig1 = px.pie(
-                dtype_counts, 
-                values='Count', 
-                names='Data Type',
-                title=f"{lang['data_types']} Distribution",
-                color_discrete_sequence=px.colors.qualitative.Set3
-            )
-            st.plotly_chart(fig1, use_container_width=True)
-        else:
-            st.info("No data available for data type analysis")
-    
-    with tab2:
-        # Chart 2: Time Series Analysis
+    with viz_tabs[0]:  # Time Series Tab
         if selected_date and selected_numeric:
             st.subheader(f"{lang['time_series']}")
             
-            # Aggregate by date
-            time_series_df = df.groupby(selected_date)[selected_numeric].sum().reset_index()
+            # Time series line chart
+            ts_data = df.groupby(selected_date)[selected_numeric].sum().reset_index()
             
-            # Create line chart
-            fig2 = go.Figure()
-            
+            fig_ts = go.Figure()
             for col in selected_numeric:
-                fig2.add_trace(go.Scatter(
-                    x=time_series_df[selected_date],
-                    y=time_series_df[col],
+                fig_ts.add_trace(go.Scatter(
+                    x=ts_data[selected_date],
+                    y=ts_data[col],
                     mode='lines+markers',
                     name=col,
                     line=dict(width=2)
                 ))
             
-            fig2.update_layout(
+            fig_ts.update_layout(
                 title=f"{lang['trend']} Analysis",
                 xaxis_title=selected_date,
                 yaxis_title="Value",
                 hovermode='x unified',
-                height=500
+                height=500,
+                showlegend=True
             )
             
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig_ts, use_container_width=True)
             
-            # Show summary statistics
+            # Time series statistics
             col_ts1, col_ts2, col_ts3 = st.columns(3)
             with col_ts1:
-                if len(time_series_df) > 1:
-                    latest_value = time_series_df[selected_numeric[0]].iloc[-1]
-                    previous_value = time_series_df[selected_numeric[0]].iloc[-2] if len(time_series_df) > 1 else 0
-                    growth = ((latest_value - previous_value) / previous_value * 100) if previous_value != 0 else 0
-                    st.metric(f"Latest {selected_numeric[0]}", f"{latest_value:,.2f}", f"{growth:+.1f}%")
+                if len(ts_data) > 1:
+                    start_val = ts_data[selected_numeric[0]].iloc[0]
+                    end_val = ts_data[selected_numeric[0]].iloc[-1]
+                    growth = ((end_val - start_val) / start_val * 100) if start_val != 0 else 0
+                    st.metric(f"Growth ({selected_numeric[0]})", f"{growth:+.1f}%")
             
             with col_ts2:
-                if len(time_series_df) > 0:
-                    total_value = time_series_df[selected_numeric[0]].sum()
-                    st.metric(f"Total {selected_numeric[0]}", f"{total_value:,.2f}")
+                if len(ts_data) > 0:
+                    total_val = ts_data[selected_numeric[0]].sum()
+                    st.metric(f"Total ({selected_numeric[0]})", f"{total_val:,.0f}")
             
             with col_ts3:
-                if len(time_series_df) > 0:
-                    avg_value = time_series_df[selected_numeric[0]].mean()
-                    st.metric(f"Average {selected_numeric[0]}", f"{avg_value:,.2f}")
+                if len(ts_data) > 0:
+                    avg_val = ts_data[selected_numeric[0]].mean()
+                    st.metric(f"Average ({selected_numeric[0]})", f"{avg_val:,.2f}")
         else:
             st.info("Select a date column and numeric columns for time series analysis")
     
-    with tab3:
-        # Chart 3: Distribution Analysis
+    with viz_tabs[1]:  # Distributions Tab
         if selected_numeric:
             st.subheader(f"{lang['distribution']}")
             
             selected_var = st.selectbox(
                 "Select variable for distribution analysis:",
                 selected_numeric,
-                key="dist_var"
+                key="dist_var_select"
             )
             
-            col_chart3_1, col_chart3_2 = st.columns(2)
+            col_dist1, col_dist2 = st.columns(2)
             
-            with col_chart3_1:
-                # Histogram
-                fig3a = px.histogram(
-                    df, 
+            with col_dist1:
+                # Histogram with density
+                fig_hist = px.histogram(
+                    df,
                     x=selected_var,
-                    title=f"Histogram of {selected_var}",
                     nbins=30,
+                    title=f"Histogram of {selected_var}",
+                    marginal="box",
                     color_discrete_sequence=['#636EFA'],
-                    marginal="box"
+                    opacity=0.7
                 )
-                fig3a.update_layout(height=400)
-                st.plotly_chart(fig3a, use_container_width=True)
+                fig_hist.update_layout(height=400)
+                st.plotly_chart(fig_hist, use_container_width=True)
             
-            with col_chart3_2:
+            with col_dist2:
                 # Box plot
-                fig3b = px.box(
-                    df, 
+                fig_box = px.box(
+                    df,
                     y=selected_var,
                     title=f"Box Plot of {selected_var}",
                     color_discrete_sequence=['#00CC96']
                 )
-                fig3b.update_layout(height=400)
-                st.plotly_chart(fig3b, use_container_width=True)
+                fig_box.update_layout(height=400)
+                st.plotly_chart(fig_box, use_container_width=True)
             
-            # Statistics
+            # Distribution statistics
+            st.subheader("Distribution Statistics")
             col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+            
             with col_stats1:
-                st.metric("Mean", f"{df[selected_var].mean():.2f}")
+                mean_val = df[selected_var].mean()
+                st.metric("Mean", f"{mean_val:,.2f}")
+            
             with col_stats2:
-                st.metric("Median", f"{df[selected_var].median():.2f}")
+                median_val = df[selected_var].median()
+                st.metric("Median", f"{median_val:,.2f}")
+            
             with col_stats3:
-                st.metric("Std Dev", f"{df[selected_var].std():.2f}")
+                std_val = df[selected_var].std()
+                st.metric("Std Dev", f"{std_val:,.2f}")
+            
             with col_stats4:
-                st.metric("Skewness", f"{df[selected_var].skew():.2f}")
+                skew_val = df[selected_var].skew()
+                st.metric("Skewness", f"{skew_val:,.2f}")
         else:
             st.info("Select numeric columns for distribution analysis")
     
-    with tab4:
-        # Chart 4: Correlation Matrix
+    with viz_tabs[2]:  # Correlations Tab
         if len(selected_numeric) > 1:
             st.subheader(f"{lang['correlation']}")
             
+            # Correlation matrix
             corr_matrix = df[selected_numeric].corr()
             
-            fig4 = px.imshow(
+            fig_corr = px.imshow(
                 corr_matrix,
                 text_auto=True,
                 aspect="auto",
@@ -518,29 +801,45 @@ if st.session_state.processed and st.session_state.df is not None:
                 labels=dict(color="Correlation"),
                 height=500
             )
-            st.plotly_chart(fig4, use_container_width=True)
+            st.plotly_chart(fig_corr, use_container_width=True)
             
-            # Find top correlations
+            # Top correlations table
             st.subheader("Top Correlations")
             corr_pairs = []
             for i in range(len(corr_matrix.columns)):
                 for j in range(i+1, len(corr_matrix.columns)):
-                    corr_pairs.append({
-                        'Variable 1': corr_matrix.columns[i],
-                        'Variable 2': corr_matrix.columns[j],
-                        'Correlation': corr_matrix.iloc[i, j]
-                    })
+                    corr_val = corr_matrix.iloc[i, j]
+                    if not pd.isna(corr_val):
+                        corr_pairs.append({
+                            'Variable 1': corr_matrix.columns[i],
+                            'Variable 2': corr_matrix.columns[j],
+                            'Correlation': corr_val
+                        })
             
-            corr_df = pd.DataFrame(corr_pairs)
-            corr_df['Abs Correlation'] = corr_df['Correlation'].abs()
-            corr_df = corr_df.sort_values('Abs Correlation', ascending=False).head(10)
-            
-            st.dataframe(corr_df[['Variable 1', 'Variable 2', 'Correlation']].round(3), use_container_width=True)
+            if corr_pairs:
+                corr_df = pd.DataFrame(corr_pairs)
+                corr_df['Abs Correlation'] = corr_df['Correlation'].abs()
+                corr_df = corr_df.sort_values('Abs Correlation', ascending=False).head(10)
+                
+                # Display top correlations
+                col_corr1, col_corr2 = st.columns([2, 1])
+                
+                with col_corr1:
+                    st.dataframe(
+                        corr_df[['Variable 1', 'Variable 2', 'Correlation']].round(3),
+                        use_container_width=True
+                    )
+                
+                with col_corr2:
+                    st.metric(
+                        "Strongest Correlation",
+                        f"{corr_df.iloc[0]['Correlation']:.3f}",
+                        help=f"Between {corr_df.iloc[0]['Variable 1']} and {corr_df.iloc[0]['Variable 2']}"
+                    )
         else:
             st.info("Select at least 2 numeric columns for correlation analysis")
     
-    with tab5:
-        # Chart 5: Category Analysis
+    with viz_tabs[3]:  # Categories Tab
         if selected_category:
             st.subheader(f"{lang['category_analysis']}")
             
@@ -548,299 +847,52 @@ if st.session_state.processed and st.session_state.df is not None:
             
             with col_cat1:
                 # Top categories bar chart
-                top_categories = df[selected_category].value_counts().head(15).reset_index()
-                top_categories.columns = [selected_category, 'Count']
+                top_cats = df[selected_category].value_counts().head(15).reset_index()
+                top_cats.columns = [selected_category, 'Count']
                 
-                fig5a = px.bar(
-                    top_categories,
+                fig_cats = px.bar(
+                    top_cats,
                     x=selected_category,
                     y='Count',
                     title=f"Top 15 {selected_category} Categories",
                     color='Count',
                     color_continuous_scale='Viridis',
-                    height=400
+                    text='Count'
                 )
-                fig5a.update_xaxes(tickangle=45)
-                st.plotly_chart(fig5a, use_container_width=True)
+                fig_cats.update_traces(textposition='outside')
+                fig_cats.update_layout(height=400, xaxis_tickangle=45)
+                st.plotly_chart(fig_cats, use_container_width=True)
             
             with col_cat2:
-                # Category vs numeric value
+                # Category vs numeric (if numeric columns selected)
                 if selected_numeric:
-                    category_avg = df.groupby(selected_category)[selected_numeric].mean().mean(axis=1).reset_index()
-                    category_avg.columns = [selected_category, 'Average Value']
-                    category_avg = category_avg.sort_values('Average Value', ascending=False).head(15)
+                    # Use first numeric column for analysis
+                    num_col = selected_numeric[0]
+                    cat_avg = df.groupby(selected_category)[num_col].mean().reset_index()
+                    cat_avg.columns = [selected_category, f'Avg {num_col}']
+                    cat_avg = cat_avg.sort_values(f'Avg {num_col}', ascending=False).head(15)
                     
-                    fig5b = px.bar(
-                        category_avg,
+                    fig_cat_num = px.bar(
+                        cat_avg,
                         x=selected_category,
-                        y='Average Value',
-                        title=f"Average Values by {selected_category}",
-                        color='Average Value',
+                        y=f'Avg {num_col}',
+                        title=f"Average {num_col} by {selected_category}",
+                        color=f'Avg {num_col}',
                         color_continuous_scale='Plasma',
-                        height=400
+                        text=f'Avg {num_col}'
                     )
-                    fig5b.update_xaxes(tickangle=45)
-                    st.plotly_chart(fig5b, use_container_width=True)
+                    fig_cat_num.update_traces(texttemplate='%{y:.2f}', textposition='outside')
+                    fig_cat_num.update_layout(height=400, xaxis_tickangle=45)
+                    st.plotly_chart(fig_cat_num, use_container_width=True)
                 else:
-                    st.info("Select numeric columns to see average values by category")
-            
-            # Show category statistics
-            st.subheader("Category Statistics")
-            col_cat_stats1, col_cat_stats2, col_cat_stats3 = st.columns(3)
-            
-            with col_cat_stats1:
-                unique_cats = df[selected_category].nunique()
-                st.metric("Unique Categories", unique_cats)
-            
-            with col_cat_stats2:
-                top_cat = df[selected_category].mode().iloc[0] if len(df[selected_category].mode()) > 0 else "N/A"
-                st.metric("Most Common Category", str(top_cat))
-            
-            with col_cat_stats3:
-                if selected_numeric and len(selected_numeric) > 0:
-                    cat_with_max = df.loc[df[selected_numeric[0]].idxmax(), selected_category]
-                    st.metric(f"Category with Max {selected_numeric[0]}", str(cat_with_max))
-        else:
-            st.info("Select a categorical column for category analysis")
-    
-    # ===================== DATA SUMMARY & INSIGHTS =====================
-    st.markdown("---")
-    st.header(f"💡 {lang['insights']}")
-    
-    col_insight1, col_insight2 = st.columns(2)
-    
-    with col_insight1:
-        st.subheader(f"📋 {lang['data_summary']}")
-        
-        summary_stats = []
-        
-        # Basic stats
-        summary_stats.append(f"**{lang['total_records']}**: {len(df):,}")
-        summary_stats.append(f"**{lang['total_columns']}**: {len(df.columns)}")
-        summary_stats.append(f"**{lang['missing_values']}**: {df.isnull().sum().sum():,}")
-        summary_stats.append(f"**Duplicate Rows**: {df.duplicated().sum():,}")
-        
-        if numeric_cols:
-            summary_stats.append(f"**{lang['numeric_columns']}**: {len(numeric_cols)}")
-            if len(numeric_cols) > 0:
-                total_numeric = df[numeric_cols].sum().sum()
-                summary_stats.append(f"**Total numeric values**: {total_numeric:,.2f}")
-        
-        if date_cols:
-            summary_stats.append(f"**{lang['date_columns']}**: {len(date_cols)}")
-            if len(date_cols) > 0:
-                date_range = f"{df[date_cols[0]].min().date()} to {df[date_cols[0]].max().date()}"
-                summary_stats.append(f"**Date range**: {date_range}")
-        
-        if categorical_cols:
-            summary_stats.append(f"**Categorical columns**: {len(categorical_cols)}")
-        
-        for stat in summary_stats:
-            st.markdown(f"• {stat}")
-    
-    with col_insight2:
-        st.subheader(f"🔍 Quick {lang['insights']}")
-        
-        insights = []
-        
-        # Generate insights based on data
-        missing_total = df.isnull().sum().sum()
-        if missing_total > 0:
-            missing_pct = (missing_total / (len(df) * len(df.columns))) * 100
-            insights.append(f"⚠️ **Missing Values**: {missing_total:,} values ({missing_pct:.1f}%) - Consider data imputation")
-        
-        duplicate_rows = df.duplicated().sum()
-        if duplicate_rows > 0:
-            dup_pct = (duplicate_rows / len(df)) * 100
-            insights.append(f"⚠️ **Duplicates**: {duplicate_rows:,} rows ({dup_pct:.1f}%) - Consider removing duplicates")
-        
-        if numeric_cols and len(selected_numeric) > 0:
-            for num_col in selected_numeric[:3]:  # Check first 3 numeric columns
-                skewness = df[num_col].skew()
-                if abs(skewness) > 1:
-                    skew_type = "right" if skewness > 0 else "left"
-                    insights.append(f"📊 **Skewed Data**: '{num_col}' is {skew_type}-skewed (skewness: {skewness:.2f})")
-        
-        if selected_date and selected_numeric and len(selected_numeric) > 0:
-            if len(df) > 1 and selected_date in df.columns:
-                try:
-                    sorted_df = df.sort_values(selected_date)
-                    first_val = sorted_df[selected_numeric[0]].iloc[0]
-                    last_val = sorted_df[selected_numeric[0]].iloc[-1]
-                    if first_val != 0:
-                        growth = ((last_val - first_val) / first_val) * 100
-                        insights.append(f"📈 **Growth Trend**: {selected_numeric[0]} changed by {growth:+.1f}% over time")
-                except:
-                    pass
-        
-        if not insights:
-            insights.append("✅ **Data Quality**: Good - No significant data quality issues detected")
-            insights.append("✅ **Data Structure**: Appropriate mix of data types for analysis")
-            insights.append("✅ **Ready for Analysis**: Data is clean and well-structured")
-        
-        for insight in insights:
-            st.markdown(f"• {insight}")
-    
-    # ===================== DATA DOWNLOAD =====================
-    st.markdown("---")
-    st.header(f"💾 {lang['download_data']}")
-    
-    # Create processed data
-    processed_df = df.copy()
-    
-    # Convert to different formats for download
-    col_dl1, col_dl2, col_dl3 = st.columns(3)
-    
-    with col_dl1:
-        # CSV Download
-        csv_data = processed_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download as CSV",
-            data=csv_data,
-            file_name=f"processed_{st.session_state.file_name.replace('.xlsx', '').replace('.xls', '')}.csv",
-            mime="text/csv",
-            help="Download the processed data as CSV file",
-            use_container_width=True
-        )
-    
-    with col_dl2:
-        # Excel Download
-        try:
-            import io
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                processed_df.to_excel(writer, index=False, sheet_name='Data')
-                
-                # Add summary sheet
-                summary_data = {
-                    'Metric': [lang['total_records'], lang['total_columns'], 
-                              lang['missing_values'], lang['date_columns'],
-                              lang['numeric_columns'], 'File Name'],
-                    'Value': [len(df), len(df.columns), df.isnull().sum().sum(), 
-                             len(date_cols), len(numeric_cols), st.session_state.file_name]
-                }
-                pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name='Summary')
-            
-            excel_data = output.getvalue()
-            
-            st.download_button(
-                label="📥 Download as Excel",
-                data=excel_data,
-                file_name=f"processed_{st.session_state.file_name.replace('.xlsx', '').replace('.xls', '')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help="Download the processed data as Excel file",
-                use_container_width=True
-            )
-        except Exception as e:
-            st.error(f"Cannot create Excel file: {str(e)}")
-            st.info("Make sure openpyxl is installed: `pip install openpyxl`")
-    
-    with col_dl3:
-        # Reset button
-        if st.button(f"🔄 {lang['reset']} & Upload New File", use_container_width=True, type="secondary"):
-            st.session_state.df = None
-            st.session_state.processed = False
-            st.session_state.file_name = None
-            st.rerun()
-
-else:
-    # Show sample data or instructions when no file is uploaded
-    st.info(f"👆 {lang['upload_desc']}")
-    
-    # Display sample data structure
-    st.markdown("### 📋 Example Data Structure")
-    
-    # Create more comprehensive sample data
-    sample_data = {
-        'Date': pd.date_range('2024-01-01', periods=10),
-        'Sales': [1000, 1500, 800, 2000, 1200, 1800, 900, 2200, 1300, 1700],
-        'Quantity': [10, 15, 8, 20, 12, 18, 9, 22, 13, 17],
-        'Profit': [200, 300, 150, 400, 240, 360, 180, 440, 260, 340],
-        'Category': ['Electronics', 'Clothing', 'Electronics', 'Home', 'Clothing', 
-                    'Electronics', 'Home', 'Electronics', 'Clothing', 'Home'],
-        'Region': ['North', 'South', 'North', 'East', 'West', 
-                  'North', 'South', 'East', 'West', 'North'],
-        'Customer_Rating': [4.5, 3.8, 4.2, 4.8, 3.9, 4.6, 4.1, 4.9, 4.0, 4.3]
-    }
-    sample_df = pd.DataFrame(sample_data)
-    st.dataframe(sample_df, use_container_width=True)
-    
-    st.markdown("""
-    ### 🎯 **Ideal data structure should include:**
-    
-    | Column Type | Example | Purpose |
-    |------------|---------|---------|
-    | 📅 **Date/Time** | `2024-01-01`, `Order_Date` | Time series analysis, trends |
-    | 🔢 **Numeric** | `Sales`, `Quantity`, `Price` | Calculations, distributions |
-    | 🏷️ **Categorical** | `Category`, `Region`, `Status` | Grouping, comparisons |
-    | 📝 **Text** | `Product_Name`, `Description` | Text analysis, categorization |
-    
-    ### 💡 **Tips for best results:**
-    1. Ensure dates are in proper date format
-    2. Use consistent naming conventions
-    3. Clean data before uploading (remove empty rows/columns)
-    4. File size should be under 200MB for optimal performance
-    """)
-
-# ===================== FOOTER =====================
-st.markdown("---")
-
-footer_col1, footer_col2, footer_col3 = st.columns(3)
-
-with footer_col1:
-    st.markdown("**📊 Multi-Language Business Dashboard**")
-    st.markdown("Version 2.1 • Powered by Streamlit")
-    st.markdown("© 2024 All rights reserved")
-
-with footer_col2:
-    st.markdown("**✨ Key Features:**")
-    st.markdown("• 📈 5+ Interactive Chart Types")
-    st.markdown("• 🌍 3 Language Support")
-    st.markdown("• 🔍 Smart Data Detection")
-    st.markdown("• 📊 Real-time Analytics")
-
-with footer_col3:
-    st.markdown("**🚀 Quick Start:**")
-    st.markdown("1. 📁 Upload Excel file")
-    st.markdown("2. 🌍 Select language")
-    st.markdown("3. 🔍 Explore insights")
-    st.markdown("4. 📥 Download results")
-
-# Add custom CSS for better appearance
-st.markdown("""
-<style>
-    /* Metric cards styling */
-    div[data-testid="metric-container"] {
-        background-color: #f8f9fa;
-        padding: 20px 15px;
-        border-radius: 10px;
-        border-left: 5px solid #4e8cff;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        transition: transform 0.2s;
-    }
-    
-    div[data-testid="metric-container"]:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-    }
-    
-    /* Button styling */
-    .stDownloadButton > button, .stButton > button {
-        width: 100%;
-        background: linear-gradient(45deg, #4e8cff, #6a5af9);
-        color: white;
-        border: none;
-        padding: 12px 24px;
-        border-radius: 8px;
-        font-weight: 600;
-        transition: all 0.3s;
-    }
-    
-    .stDownloadButton > button:hover, .stButton > button:hover {
-        background: linear-gradient(45deg, #3a7cff, #5a4af9);
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(74, 140, 255, 0.3);
-    }
-    
-    /* Tab styling */
-    .stT
+                    # Pie chart if no numeric columns
+                    top_cats_pie = df[selected_category].value_counts().head(10).reset_index()
+                    top_cats_pie.columns = [selected_category, 'Count']
+                    
+                    fig_pie = px.pie(
+                        top_cats_pie,
+                        values='Count',
+                        names=selected_category,
+                        title=f"Top 10 {selected_category} Categories",
+                        hole=0.3
+                   
